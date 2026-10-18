@@ -90,12 +90,27 @@ const INITIAL_SETTINGS = {
     qrisAvailable: true,
 };
 const AppContext = createContext();
+const SK = 'sce2027:';
+const loadLS = (k, d, store) => { try {
+    const v = window[(store || 'local') + 'Storage'].getItem(SK + k);
+    return v ? JSON.parse(v) : d;
+}
+catch (e) {
+    return d;
+} };
+const saveLS = (k, v, store) => { try {
+    window[(store || 'local') + 'Storage'].setItem(SK + k, JSON.stringify(v));
+}
+catch (e) {
+    console.warn('Penyimpanan browser penuh', e);
+} };
 const AppProvider = ({ children }) => {
-    const [currentView, setCurrentView] = useState('home'); // home, register, payment, status, admin
-    const [currentUser, setCurrentUser] = useState(null); // Simulated logged in user/registrant
-    const [isAdmin, setIsAdmin] = useState(false);
-    const [visitor, setVisitor] = useState(null); // {name, class, rombel} dari layar awal
-    const [visitors, setVisitors] = useState([]); // log siapa saja yang sudah masuk
+    // Semua state disimpan di browser, jadi refresh tidak menghapus progres
+    const [currentView, setCurrentView] = useState(() => { const v = loadLS('view', 'home'); return v === 'admin' && !loadLS('admin', false, 'session') ? 'home' : v; });
+    const [currentUser, setCurrentUser] = useState(() => loadLS('user', null));
+    const [isAdmin, setIsAdmin] = useState(() => loadLS('admin', false, 'session')); // panitia tetap masuk selama tab/browser belum ditutup
+    const [visitor, setVisitor] = useState(() => loadLS('visitor', null)); // {name, class, rombel}: isi nama cukup sekali
+    const [visitors, setVisitors] = useState(() => loadLS('visitors', [])); // log siapa saja yang sudah masuk
     const enterSite = (data) => {
         const now = new Date().toISOString();
         setVisitors(prev => {
@@ -106,19 +121,46 @@ const AppProvider = ({ children }) => {
         });
         setVisitor(data);
     };
-    // Mock Database
-    const [db, setDb] = useState({
-        settings: INITIAL_SETTINGS,
-        registrations: [
-            { id: 'REG-2027-001', name: 'BUDI SANTOSO', class: '12', rombel: 'A', absen: '15', email: 'budi@example.com', phone: '08123456789', status: 'Terverifikasi', timestamp: new Date().toISOString() }
-        ]
-    });
+    const [db, setDb] = useState(() => loadLS('db', { settings: INITIAL_SETTINGS, registrations: [] }));
+    useEffect(() => saveLS('view', currentView), [currentView]);
+    useEffect(() => saveLS('user', currentUser), [currentUser]);
+    useEffect(() => saveLS('admin', isAdmin, 'session'), [isAdmin]);
+    useEffect(() => saveLS('visitor', visitor), [visitor]);
+    useEffect(() => saveLS('visitors', visitors), [visitors]);
+    useEffect(() => saveLS('db', db), [db]);
+    useEffect(() => {
+        setCurrentUser(u => { if (!u)
+            return u; const f = db.registrations.find(r => r.id === u.id); return f && f !== u ? f : u; });
+    }, [db]);
+    useEffect(() => {
+        const h = (e) => {
+            if (!e.key || e.key.indexOf(SK) !== 0)
+                return;
+            const k = e.key.slice(SK.length);
+            let v = null;
+            try {
+                v = e.newValue ? JSON.parse(e.newValue) : null;
+            }
+            catch (err) {
+                return;
+            }
+            if (k === 'db' && v)
+                setDb(v);
+            if (k === 'visitors' && v)
+                setVisitors(v);
+            if (k === 'user')
+                setCurrentUser(v);
+        };
+        window.addEventListener('storage', h);
+        return () => window.removeEventListener('storage', h);
+    }, []);
     const navigate = (view) => {
         window.scrollTo({ top: 0, behavior: 'smooth' });
         setCurrentView(view);
     };
     const registerUser = (data) => {
-        const newId = `REG-2027-${String(db.registrations.length + 2).padStart(3, '0')}`;
+        const nextNum = Math.max(0, ...db.registrations.map(r => parseInt(r.id.split('-').pop(), 10) || 0)) + 1;
+        const newId = `REG-2027-${String(nextNum).padStart(3, '0')}`;
         const newReg = { ...data, id: newId, status: 'Belum Membayar', timestamp: new Date().toISOString() };
         setDb(prev => ({ ...prev, registrations: [...prev.registrations, newReg] }));
         setCurrentUser(newReg);
@@ -582,7 +624,19 @@ const PaymentView = () => {
         if (selected.size > 5 * 1024 * 1024)
             return alert("Ukuran file maksimal 5MB.");
         const reader = new FileReader();
-        reader.onload = () => setFile(reader.result); // data URL: tetap bisa dilihat panitia
+        reader.onload = () => {
+            const img = new Image();
+            img.onload = () => {
+                const sc = Math.min(1, 1000 / Math.max(img.width, img.height));
+                const c = document.createElement('canvas');
+                c.width = Math.round(img.width * sc);
+                c.height = Math.round(img.height * sc);
+                c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+                setFile(c.toDataURL('image/jpeg', 0.72));
+            };
+            img.onerror = () => alert('Gambar tidak bisa dibaca.');
+            img.src = reader.result;
+        };
         reader.readAsDataURL(selected);
     };
     const handleUpload = () => {
@@ -920,7 +974,7 @@ const AdminView = () => {
                 detail.proof ? (React.createElement("img", { src: detail.proof, alt: "Bukti pembayaran", onClick: () => setZoom(z => !z), className: `w-full rounded-2xl border border-white/20 bg-black/40 cursor-zoom-in ${zoom ? 'max-h-none' : 'max-h-96'} object-contain` })) : (React.createElement("div", { className: "h-48 rounded-2xl border-2 border-dashed border-white/15 flex items-center justify-center text-white/40 text-sm" }, "Siswa belum upload bukti"))))))));
 };
 const AppContent = () => {
-    const { currentView, visitor, isAdmin } = useContext(AppContext);
+    const { currentView, visitor, isAdmin, setVisitor } = useContext(AppContext);
     if (!visitor && !isAdmin) {
         return (React.createElement("div", { className: "min-h-screen bg-gradient-to-br from-[#111311] via-[#174C32] to-[#111311] font-sans text-white relative" },
             React.createElement("style", { dangerouslySetInnerHTML: { __html: `body { margin: 0; overflow-x: hidden; background-color: #111311; } * { box-sizing: border-box; }` } }),
@@ -952,7 +1006,11 @@ const AppContent = () => {
                 currentView === 'admin' && (React.createElement(motion.div, { key: "admin", initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 } },
                     React.createElement(AdminView, null))))),
         currentView !== 'admin' && (React.createElement("footer", { className: "py-8 text-center text-white/40 text-sm relative z-10 bg-black/60 backdrop-blur-md border-t border-white/5 mt-auto" },
-            React.createElement("p", null, "\u00A9 2027 SMAGO Campus Expo & Try Out. All rights reserved.")))));
+            React.createElement("p", null, "\u00A9 2027 SMAGO Campus Expo & Try Out. All rights reserved."),
+            visitor && React.createElement("button", { onClick: () => setVisitor(null), className: "mt-2 text-xs text-white/50 underline" },
+                "Masuk sebagai ",
+                visitor.name,
+                " \u00B7 Ganti nama")))));
 };
 function App() {
     return (React.createElement(AppProvider, null,
